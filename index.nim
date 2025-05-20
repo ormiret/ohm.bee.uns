@@ -1,22 +1,26 @@
 import std/[strutils, strformat, asyncdispatch, sets, hashes, json,
             sugar, os, random, asyncnet]
-import karax/[karaxdsl, vdom, vstyles, kbase], jester, ws, ws/jester_extra
+import karax/[karaxdsl, vdom, vstyles, kbase]
+import prologue
+import prologue/websocket
+import prologue/middlewares/staticfile
+
 
 proc fileList(): seq[string] =
   result = collect:
     for file in walkFiles("public/img/*"):
       file.split({'/'})[^1]
-var files = fileList()
-echo fmt"Have {files.len} files to display"
+
 randomize()
 
 converter toString(x: VNode): string = $x
 
-let full = new(VStyle)
-full.setAttr(StyleAttr.width, "100%".kstring)
-full.setAttr(StyleAttr.height, "100%".kstring)
-full.setAttr(StyleAttr.margin, "0".kstring)
-full.setAttr(StyleAttr.backgroundColor, "black".kstring)
+proc full(): VStyle =
+  result = new(VStyle)
+  result.setAttr(StyleAttr.width, "100%".kstring)
+  result.setAttr(StyleAttr.height, "100%".kstring)
+  result.setAttr(StyleAttr.margin, "0".kstring)
+  result.setAttr(StyleAttr.backgroundColor, "black".kstring)
 
 template index*(rest: untyped): untyped =
   buildHtml(html(lang = "en")):
@@ -25,17 +29,17 @@ template index*(rest: untyped): untyped =
       # link(rel = "stylesheet", href = "https://unpkg.com/@picocss/pico@latest/css/pico.min.css")
       script(src = "https://unpkg.com/htmx.org@1.6.0")
       title: text "Ω 🐝 🥁"
-    body(style=full):
-      main(class="container", style=full): rest
+    body(style=full()):
+      main(class="container", style=full()): rest
 
 proc randGif(fnames: seq[string]): VNode =
   let fname = fnames.sample
   if fname.endsWith(".mp4"):
-    result = buildhtml(tdiv(id="content", style=full)):
-      video(src="/img/"&fname, style=full, autoplay="true", loop="true", muted="true")
+    result = buildhtml(tdiv(id="content", style=full())):
+      video(src="/public/img/"&fname, style=full(), autoplay="true", loop="true", muted="true")
   else:
-    result = buildhtml(tdiv(id="content",style=full)):
-      img(src="/img/"&fname, style=full)
+    result = buildhtml(tdiv(id="content",style=full())):
+      img(src="/public/img/"&fname, style=full())
 
 proc waitForClose(ws: WebSocket): Future[void] {.async.} =
   # Need to be processing recived packets to get close when client disconnects
@@ -43,31 +47,36 @@ proc waitForClose(ws: WebSocket): Future[void] {.async.} =
     discard await ws.receiveStrPacket()
   except:
     echo "Close"
-      
-routes:
-  get "/":
-    let html = index:
-      tdiv(hx-ws="connect:/ws", style=full):
-        tdiv(id="content", style=full):
-          text "Loading..."
-    resp html
-  get "/reload":
-    files = fileList()
-    let html = index:
-      text fmt"Done. Now have {files.len} files"
-    resp html
-  get "/ws":
-    var ws = await newWebSocket(request)
-    try:
-      asyncCheck waitForClose(ws)
-      while ws.readyState == Open:
-        let nb = files.randGif
-        echo "sending: "&nb
-        await ws.send(nb)
-        await sleepAsync(60000)
-      echo "Socket closed."
-    except:
-      echo "Someone disconnected?"
-    resp ""
+
+
+proc root*(ctx: Context) {.async, gcsafe.} =
+  let html = index:
+    tdiv(hx-ws="connect:/ws", style=full()):
+      tdiv(id="content", style=full()):
+        text "Loading..."
+  resp html
+
+proc ws*(ctx: Context) {.async, gcsafe.} =
+  var ws = await newWebSocket(ctx)
+  try:
+    asyncCheck waitForClose(ws)
+    while ws.readyState == Open:
+      let nb = randGif(fileList())
+      echo "sending: "&nb
+      await ws.send(nb)
+      await sleepAsync(60000)
+    echo "Socket closed."
+  except:
+    echo "Someone disconnected?"
+  resp ""
+  
+
+when isMainModule:
+  var app = newApp()
+  app.use(staticFileMiddleware("public"))
+  app.get("/", root)
+  # app.get("/reload", reload)
+  app.get("/ws", ws)
+  app.run()
     
   
